@@ -1,0 +1,99 @@
+NAME
+    AnyEvent::Socket::More - AnyEvent::Socket. Extended
+
+SYNOPSIS
+        package Sample;
+        use AnyEvent::Socket::More;
+
+        my ($sock,$host,$port) = tcp_listen localhost => 80;
+
+        # fork, fork ...
+
+        tcp_accept($sock, sub {
+        ...
+        });
+
+DESCRIPTION
+    This module contain 2 additional functions: "tcp_listen" (that creates
+    listen socket) and "tcp_accept" (that accepts connections on listen
+    socket) They both are the same as "tcp_server" in AnyEvent::Socket, but
+    splitted in 2 parts.
+
+    $sock, [$host, $port] = tcp_listen $host, $service[, $prepare_cb]
+        Create and bind a stream socket to the given host, and port, set the
+        SO_REUSEADDR flag (if applicable) and call "listen". Unlike the name
+        implies, this function can also bind on UNIX domain sockets.
+
+        For internet sockets, $host must be an IPv4 or IPv6 address (or
+        "undef", in which case it binds either to 0 or to "::", depending on
+        whether IPv4 or IPv6 is the preferred protocol, and maybe to both in
+        future versions, as applicable).
+
+        To bind to the IPv4 wildcard address, use 0, to bind to the IPv6
+        wildcard address, use "::".
+
+        The port is specified by $service, which must be either a service
+        name or a numeric port number (or 0 or "undef", in which case an
+        ephemeral port will be used).
+
+        For UNIX domain sockets, $host must be "unix/" and $service must be
+        the absolute pathname of the socket. This function will try to
+        "unlink" the socket before it tries to bind to it. See SECURITY
+        CONSIDERATIONS, below.
+
+        Croaks on any errors it can detect before the listen.
+
+        If you need more control over the listening socket, you can provide
+        a "$prepare_cb->($fh, $host, $port)", which is called just before
+        the "listen ()" call, with the listen file handle as first argument,
+        and IP address and port number of the local socket endpoint as
+        second and third arguments.
+
+        It should return the length of the listen queue (or 0 for the
+        default (128)).
+
+        Note to IPv6 users: RFC-compliant behaviour for IPv6 sockets
+        listening on "::" is to bind to both IPv6 and IPv4 addresses by
+        default on dual-stack hosts. Unfortunately, only GNU/Linux seems to
+        implement this properly, so if you want both IPv4 and IPv6 listening
+        sockets you should create the IPv6 socket first and then attempt to
+        bind on the IPv4 socket, but ignore any "EADDRINUSE" errors.
+
+        Example: bind on some TCP port on the local machine and tell each
+        client to go away.
+
+           my $sock = tcp_listen undef, undef, sub {
+          my ($fh, $thishost, $thisport) = @_;
+          warn "bound to $thishost, port $thisport\n";
+          return 0;
+           };
+
+    $guard = tcp_accept $sock, $accept_cb;
+        For each new connection that could be "accept"ed, call the
+        "$accept_cb->($fh, $host, $port)" with the file handle (in
+        non-blocking mode) as first, and the peer host and port as second
+        and third arguments (see "tcp_connect" for details).
+
+        If called in non-void context, then this function returns a guard
+        object whose lifetime it tied to the TCP server: If the object gets
+        destroyed, the server will be stopped (but existing accepted
+        connections will not be affected).
+
+        Example: Accept connections on listen socket
+
+           tcp_accept $sock, sub {
+          my ($fh, $host, $port) = @_;
+
+          syswrite $fh, "The internet is full, $host:$port. Go away!\015\012";
+           };
+
+AUTHOR
+    Mons Anderson, "<mons@cpan.org>"
+
+    Based on Marc Lehmann's AnyEvent::Socket
+
+LICENSE
+    This program is free software; you can redistribute it and/or modify it
+    under the terms of either: the GNU General Public License as published
+    by the Free Software Foundation; or the Artistic License.
+
