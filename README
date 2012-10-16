@@ -87,6 +87,63 @@ DESCRIPTION
           syswrite $fh, "The internet is full, $host:$port. Go away!\015\012";
            };
 
+    $sock, [$host, $port] = udp_listen $host, $service[, $prepare_cb]
+        Create and bind an UDP datagram socket to the given host, and port,
+        set the SO_REUSEADDR flag (if applicable). Unlike the name implies,
+        this function can also bind on UNIX domain sockets.
+
+        Example:
+
+        my $fh = udp_listen( '127.0.0.1', 7777 );
+
+    $guard = udp_accept $sock [, $buffersize = 65536 ],
+    $readcb->(\$message);
+        Waits for messages on udp socket, reads them and invoke callback
+        with a reference to message buffer
+
+        Example:
+
+        my $fh = udp_listen( '127.0.0.1', 7777 );
+        # fork some times
+        if ($child) {
+            udp_accept $fh, 4096, sub {
+            my $rmsg = shift;
+            say "Received message: ".$$rmsg;
+            }
+        }
+
+        Also simple AE::io watcher may be used insted
+
+        my $w = AE::io $fh, 0, sub {
+            while(recv $fh, $buffersize, $flags) {
+            # ...
+            }
+        }
+
+    $guard = udp_server $host, $service [, $buffersize = 65536,
+    $prepace_cb->($fh) ], $readcb->(\$message);
+        Simple concatenation of udp_listen + udp_accept;
+
+        Example:
+
+        udp_server 'localhost', 1234, 4096, sub {
+            my $rmsg = shift;
+            say "Received message: ".$$rmsg;
+        };
+
+    $guard = udp_connect $host, $service, $prepare_cb, $callback
+        Call equivalent to tcp_connect but with SOCK_DGRAM and IPPROTO_UDP
+
+        Example:
+
+        udp_connect localhost => 1234, sub {
+            my $fh = shift;
+            my $io;$io = AE::io $fh, 1, sub {
+            send( $fh, "Message", 0 );
+            undef $io;
+            };
+        };
+
 AUTHOR
     Mons Anderson, "<mons@cpan.org>"
 

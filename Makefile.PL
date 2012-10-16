@@ -7,6 +7,7 @@ author         'Mons Anderson <mons@cpan.org>';
 license        'perl';
 
 build_requires 'Test::More';
+build_requires 'Test::NoWarnings';
 build_requires 'lib::abs',  '0.90';
 
 requires 'common::sense',    2;

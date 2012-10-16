@@ -12,7 +12,7 @@ AnyEvent::Socket::More - AnyEvent::Socket. Extended
 
 =cut
 
-our $VERSION = '0.01'; $VERSION = eval($VERSION);
+our $VERSION = '0.02'; $VERSION = eval($VERSION);
 
 =head1 SYNOPSIS
 
@@ -103,6 +103,66 @@ Example: Accept connections on listen socket
       syswrite $fh, "The internet is full, $host:$port. Go away!\015\012";
    };
 
+=item $sock, [$host, $port] = udp_listen $host, $service[, $prepare_cb]
+
+Create and bind an UDP datagram socket to the given host, and port, set the
+SO_REUSEADDR flag (if applicable). Unlike the name
+implies, this function can also bind on UNIX domain sockets.
+
+Example:
+
+    my $fh = udp_listen( '127.0.0.1', 7777 );
+    
+
+=item $guard = udp_accept $sock [, $buffersize = 65536 ], $readcb->(\$message);
+
+Waits for messages on udp socket, reads them and invoke callback with a
+reference to message buffer
+
+Example:
+
+    my $fh = udp_listen( '127.0.0.1', 7777 );
+    # fork some times
+    if ($child) {
+        udp_accept $fh, 4096, sub {
+            my $rmsg = shift;
+            say "Received message: ".$$rmsg;
+        }
+    }
+
+Also simple AE::io watcher may be used insted
+
+    my $w = AE::io $fh, 0, sub {
+        while(recv $fh, $buffersize, $flags) {
+            # ...
+        }
+    }
+
+=item $guard = udp_server $host, $service [, $buffersize = 65536, $prepace_cb->($fh) ], $readcb->(\$message);
+
+Simple concatenation of udp_listen + udp_accept;
+
+Example:
+
+    udp_server 'localhost', 1234, 4096, sub {
+        my $rmsg = shift;
+        say "Received message: ".$$rmsg;
+    };
+
+=item $guard = udp_connect $host, $service, $prepare_cb, $callback
+
+Call equivalent to tcp_connect but with SOCK_DGRAM and IPPROTO_UDP
+
+Example:
+
+    udp_connect localhost => 1234, sub {
+        my $fh = shift;
+        my $io;$io = AE::io $fh, 1, sub {
+            send( $fh, "Message", 0 );
+            undef $io;
+        };
+    };
+
 =cut
 
 use Carp ();
@@ -112,7 +172,7 @@ use AnyEvent::Socket;
 
 BEGIN {
 	our @ISA = 'AnyEvent::Socket';
-	our @EXPORT = ( @AnyEvent::Socket::EXPORT, 'tcp_listen', 'tcp_accept' );
+	our @EXPORT = ( @AnyEvent::Socket::EXPORT, 'tcp_listen', 'tcp_accept', 'udp_listen', 'udp_server', 'udp_connect' );
 }
 
 use Errno ();
@@ -167,6 +227,52 @@ sub tcp_listen ($$;$) {
 	} : $fh;
 }
 
+sub udp_listen ($$;$) {
+	my ($host, $service, $prepare) = @_;
+	$host = $AnyEvent::PROTOCOL{ipv4} < $AnyEvent::PROTOCOL{ipv6} && AF_INET6 ? "::" : "0" unless defined $host;
+	
+	my $ipn = parse_address $host
+		or Carp::croak "AnyEvent::Socket::More::udp_listen: cannot parse '$host' as host address";
+	
+	my $af = address_family $ipn;
+	
+	# win32 perl is too stupid to get this right :/
+	Carp::croak "udp_listen/socket: address family not supported"
+		if AnyEvent::WIN32 && $af == AF_UNIX;
+	
+	
+	socket my $fh, $af, SOCK_DGRAM, getprotobyname("udp") or Carp::croak "udp_listen/socket: $!";
+	
+	if ($af == AF_INET || $af == AF_INET6) {
+		setsockopt $fh, SOL_SOCKET, SO_REUSEADDR, 1
+			or Carp::croak "udp_listen/so_reuseaddr: $!"
+				unless AnyEvent::WIN32; # work around windows bug
+		
+		unless ($service =~ /^\d*$/) {
+			$service = (getservbyname $service, "udp")[2]
+				or Carp::croak "udp_listen: $service: service unknown"
+		}
+	} elsif ($af == AF_UNIX) {
+		unlink $service;
+	}
+	
+	bind $fh, AnyEvent::Socket::pack_sockaddr( $service, $ipn )
+		or Carp::croak "udp_listen/bind: $!";
+	
+	fh_nonblocking $fh, 1;
+	
+	my $backlog;
+	if ($prepare) {
+		my ($service, $host) = AnyEvent::Socket::unpack_sockaddr getsockname $fh;
+		$backlog = $prepare->($fh, format_address $host, $service);
+	}
+	
+	return wantarray ? do {
+		my ($service, $host) = AnyEvent::Socket::unpack_sockaddr( getsockname $fh );
+		($fh, format_address $host, $service);
+	} : $fh;
+}
+
 sub tcp_accept ($$) {
 	my ($fh, $accept) = @_;
 	
@@ -184,6 +290,105 @@ sub tcp_accept ($$) {
 	defined wantarray
 		? guard { %state = () } # clear fh and watcher, which breaks the circular dependency
 		: ()
+}
+
+sub udp_accept ($$;$) { # fh, read, sub
+	my $fh = shift;
+	my $cb = pop;
+	my $read = @_ && $_[0] > 0 ? shift : 65536;
+	my %state = ( fh => $fh );
+	$state{aw} = AE::io $state{fh}, 0, sub {
+		while (recv $state{fh}, my $buf, $read, 0) {
+			$cb->(\$buf);
+		}
+	};
+	defined wantarray
+		? guard { %state = () } # clear fh and watcher, which breaks the circular dependency
+		: ()
+}
+
+sub udp_server($$$;$$) {
+	my $cb = pop;
+	my ($host,$port) = splice @_, 0, 2;
+	my ($read, $prepare);
+	if (@_ == 2) {
+		($read, $prepare) = @_;
+	}
+	elsif ( @_ == 1 and ref $_[0] eq 'SUB') {
+		$prepare = shift;
+	}
+	elsif ( @_ == 1 and $_[0] > 0) {
+		$read = $_[0];
+	}
+	elsif ($_ == 1) {
+		Carp::croak "udp_server: bad argument 4: $_[0]";
+	}
+	
+	my $fh = &udp_listen($host,$port,$prepare);
+	udp_accept($fh, $read, $cb);
+}
+
+sub udp_connect($$$;$) {
+	my ($host, $port, $connect, $prepare) = @_;
+	my %state = ( fh => undef );
+	# name/service to type/sockaddr resolution
+	AnyEvent::Socket::resolve_sockaddr $host, $port, "udp", 0, SOCK_DGRAM, sub {
+		my @target = @_;
+		$state{next} = sub {
+			return unless exists $state{fh};
+			my $errno = $!;
+			my $target = shift @target
+				or return AE::postpone {
+					return unless exists $state{fh};
+					%state = ();
+					$! = $errno;
+					$connect->();
+			};
+			my ($domain, $type, $proto, $sockaddr) = @$target;
+			socket $state{fh}, $domain, $type, $proto
+				or return $state{next}();
+			fh_nonblocking $state{fh}, 1;
+			my $timeout = $prepare && $prepare->($state{fh});
+			$timeout ||= 30 if AnyEvent::WIN32;
+			$state{to} = AE::timer $timeout, 0, sub {
+				$! = Errno::ETIMEDOUT;
+				$state{next}();
+			} if $timeout;
+			if ( (connect $state{fh}, $sockaddr)
+				|| ($! == Errno::EINPROGRESS # POSIX
+				|| $! == Errno::EWOULDBLOCK
+				|| $! == AnyEvent::Util::WSAEINVAL # not convinced, but doesn't hurt
+				|| $! == AnyEvent::Util::WSAEWOULDBLOCK)
+			) {
+				$state{ww} = AE::io $state{fh}, 1, sub {
+					if (my $sin = getpeername $state{fh}) {
+						my ($port, $host) = AnyEvent::Socket::unpack_sockaddr $sin;
+						delete $state{ww}; delete $state{to};
+						my $guard = guard { %state = () };
+						$connect->(delete $state{fh}, AnyEvent::Socket::format_address $host, $port, sub {
+							$guard->cancel;
+							$state{next}();
+						});
+					} else {
+						if ($! == Errno::ENOTCONN) {
+							# maybe recv?
+							sysread $state{fh}, my $buf, 1;
+							$! = (unpack "l", getsockopt $state{fh}, Socket::SOL_SOCKET(), Socket::SO_ERROR()) || Errno::EAGAIN
+								if AnyEvent::CYGWIN && $! == Errno::EAGAIN;
+						}
+						return if $! == Errno::EAGAIN; # skip spurious wake-ups
+						delete $state{ww}; delete $state{to};
+						$state{next}();
+					}
+				};
+			} else {
+				$state{next}();
+			}
+		};
+		$! = Errno::ENXIO;
+		$state{next}();
+	};
+	defined wantarray && guard { %state = () };
 }
 
 =back
