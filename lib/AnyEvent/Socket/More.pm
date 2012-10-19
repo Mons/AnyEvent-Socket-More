@@ -298,8 +298,9 @@ sub udp_accept ($$;$) { # fh, read, sub
 	my $read = @_ && $_[0] > 0 ? shift : 65536;
 	my %state = ( fh => $fh );
 	$state{aw} = AE::io $state{fh}, 0, sub {
-		while (recv $state{fh}, my $buf, $read, 0) {
-			$cb->(\$buf);
+		while (my $peer = recv $state{fh}, my $buf, $read, 0) {
+			my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $peer;
+			$cb->(\$buf, format_address $host, $service);
 		}
 	};
 	defined wantarray
